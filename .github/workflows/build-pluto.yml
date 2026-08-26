@@ -1,0 +1,47 @@
+name: Build Pluto Obfuscator
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y cmake ninja-build gcc g++ python3 libz3-dev
+
+      - name: Clone Pluto
+        run: |
+          git clone https://github.com/bluesadi/Pluto.git
+          cd Pluto
+
+      - name: Build Pluto
+        run: |
+          cd Pluto
+          mkdir -p build
+          cmake -G Ninja -S . -B build \
+            -DCMAKE_C_COMPILER="gcc" \
+            -DCMAKE_CXX_COMPILER="g++" \
+            -DCMAKE_INSTALL_PREFIX="$(pwd)/install" \
+            -DCMAKE_BUILD_TYPE=Release
+          ninja -C build install
+
+      - name: Package installation
+        run: |
+          cd Pluto/install
+          tar -czf pluto-llvm14.tar.gz *
+          echo "ARTIFACT_PATH=$(pwd)/pluto-llvm14.tar.gz" >> $GITHUB_ENV
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pluto-llvm14
+          path: ${{ env.ARTIFACT_PATH }}
