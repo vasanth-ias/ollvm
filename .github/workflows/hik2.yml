@@ -16,7 +16,30 @@ jobs:
         run: |
           git clone --recursive https://github.com/Equati0n/Hikari-LLVM15.0.2.git hikari
 
-      - name: Configure and build LLVM with Hikari
+      - name: Verify advanced flags exist in source
+        run: |
+          cd hikari
+          echo "Checking for advanced obfuscation flags..."
+          FLAGS=(
+            "bcf_junkasm"
+            "bcf_junkasm_minnum"
+            "bcf_junkasm_maxnum"
+            "enable-constenc"
+            "indibran-enc-jump-target"
+            "enable-antihook"
+            "enable-adb"
+          )
+          for flag in "${FLAGS[@]}"; do
+            if grep -rq "$flag" . ; then
+              echo "Found: $flag"
+            else
+              echo "ERROR: Flag '$flag' not found in source code!"
+              exit 1
+            fi
+          done
+          echo "All required advanced flags are present."
+
+      - name: Configure LLVM with Hikari
         run: |
           cd hikari
           mkdir -p build
@@ -30,8 +53,12 @@ jobs:
             -DLLVM_PARALLEL_LINK_JOBS=1 \
             -DCMAKE_INSTALL_PREFIX="$(pwd)/../install" \
             ../llvm
-          ninja -j$(nproc)
-          ninja install
+
+      - name: Build clang and lld only
+        run: |
+          cd hikari/build
+          ninja clang lld
+          ninja install-clang install-lld
 
       - name: Package installation
         run: |
