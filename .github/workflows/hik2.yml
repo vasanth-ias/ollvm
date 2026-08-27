@@ -29,7 +29,7 @@ jobs:
             -DLLVM_INCLUDE_EXAMPLES=OFF \
             -DLLVM_PARALLEL_LINK_JOBS=1 \
             -DCMAKE_INSTALL_PREFIX="$(pwd)/../install" \
-            ..
+            ../llvm
           ninja -j$(nproc)
           ninja install
 
