@@ -1,4 +1,4 @@
-name: Build Pluto Obfuscator
+name: Build Pluto Obfuscator (AArch64 only)
 
 on:
   workflow_dispatch:
@@ -21,9 +21,8 @@ jobs:
       - name: Clone Pluto
         run: |
           git clone https://github.com/bluesadi/Pluto.git
-          cd Pluto
 
-      - name: Build Pluto
+      - name: Build Pluto (AArch64 backend only)
         run: |
           cd Pluto
           mkdir -p build
@@ -31,17 +30,18 @@ jobs:
             -DCMAKE_C_COMPILER="gcc" \
             -DCMAKE_CXX_COMPILER="g++" \
             -DCMAKE_INSTALL_PREFIX="$(pwd)/install" \
-            -DCMAKE_BUILD_TYPE=Release
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_TARGETS_TO_BUILD="AArch64"
           ninja -C build install
 
       - name: Package installation
         run: |
           cd Pluto/install
-          tar -czf pluto-llvm14.tar.gz *
-          echo "ARTIFACT_PATH=$(pwd)/pluto-llvm14.tar.gz" >> $GITHUB_ENV
+          tar -czf pluto-llvm14-aarch64.tar.gz *
+          echo "ARTIFACT_PATH=$(pwd)/pluto-llvm14-aarch64.tar.gz" >> $GITHUB_ENV
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pluto-llvm14
+          name: pluto-llvm14-aarch64
           path: ${{ env.ARTIFACT_PATH }}
