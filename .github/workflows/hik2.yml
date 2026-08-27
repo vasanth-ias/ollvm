@@ -6,11 +6,13 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 360   # 6 hours max
+
     steps:
       - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install -y cmake ninja-build gcc g++ python3 libz3-dev
+          sudo apt install -y cmake ninja-build gcc g++ python3 libz3-dev ccache
 
       - name: Clone Equati0n/Hikari-LLVM15.0.2
         run: |
@@ -39,26 +41,30 @@ jobs:
           done
           echo "All required advanced flags are present."
 
-      - name: Configure LLVM with Hikari
+      - name: Configure LLVM with Hikari (shared lib, only clang)
         run: |
           cd hikari
           mkdir -p build
           cd build
           cmake -G "Ninja" \
             -DCMAKE_BUILD_TYPE=Release \
-            -DLLVM_ENABLE_PROJECTS="clang;lld" \
+            -DLLVM_ENABLE_PROJECTS="clang" \
             -DLLVM_TARGETS_TO_BUILD="AArch64" \
+            -DLLVM_BUILD_LLVM_DYLIB=ON \
+            -DLLVM_LINK_LLVM_DYLIB=ON \
             -DLLVM_INCLUDE_TESTS=OFF \
             -DLLVM_INCLUDE_EXAMPLES=OFF \
-            -DLLVM_PARALLEL_LINK_JOBS=1 \
+            -DLLVM_PARALLEL_COMPILE_JOBS=4 \
+            -DLLVM_PARALLEL_LINK_JOBS=2 \
+            -DLLVM_CCACHE_BUILD=ON \
             -DCMAKE_INSTALL_PREFIX="$(pwd)/../install" \
             ../llvm
 
-      - name: Build clang and lld only
+      - name: Build clang only
         run: |
           cd hikari/build
-          ninja clang lld
-          ninja install-clang install-lld
+          ninja -j4 clang
+          ninja install-clang
 
       - name: Package installation
         run: |
