@@ -1,0 +1,46 @@
+name: Build Equati0n Hikari-LLVM15.0.2 (AArch64)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y cmake ninja-build gcc g++ python3 libz3-dev
+
+      - name: Clone Equati0n/Hikari-LLVM15.0.2
+        run: |
+          git clone --recursive https://github.com/Equati0n/Hikari-LLVM15.0.2.git hikari
+
+      - name: Configure and build LLVM with Hikari
+        run: |
+          cd hikari
+          mkdir -p build
+          cd build
+          cmake -G "Ninja" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_ENABLE_PROJECTS="clang;lld" \
+            -DLLVM_TARGETS_TO_BUILD="AArch64" \
+            -DLLVM_INCLUDE_TESTS=OFF \
+            -DLLVM_INCLUDE_EXAMPLES=OFF \
+            -DLLVM_PARALLEL_LINK_JOBS=1 \
+            -DCMAKE_INSTALL_PREFIX="$(pwd)/../install" \
+            ..
+          ninja -j$(nproc)
+          ninja install
+
+      - name: Package installation
+        run: |
+          cd hikari/install
+          tar -czf hikari-llvm15.0.2-aarch64.tar.gz *
+          echo "ARTIFACT_PATH=$(pwd)/hikari-llvm15.0.2-aarch64.tar.gz" >> $GITHUB_ENV
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hikari-llvm15.0.2-aarch64
+          path: ${{ env.ARTIFACT_PATH }}
