@@ -1,0 +1,67 @@
+name: Build Equati0n Hikari-LLVM15 (AArch64)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y cmake ninja-build gcc g++ python3 libz3-dev
+
+      - name: Clone Equati0n/Hikari-LLVM15
+        run: |
+          git clone --recursive https://github.com/Equati0n/Hikari-LLVM15.git hikari
+
+      - name: Verify advanced flags exist in source
+        run: |
+          cd hikari
+          echo "Checking for junk assembly flags..."
+          FLAGS=(
+            "bcf_junkasm"
+            "bcf_junkasm_minnum"
+            "bcf_junkasm_maxnum"
+            "enable-constenc"
+            "indibran-enc-jump-target"
+          )
+          for flag in "${FLAGS[@]}"; do
+            if grep -rq "$flag" llvm/ ; then
+              echo "Found: $flag"
+            else
+              echo "ERROR: Flag '$flag' not found in source code!"
+              exit 1
+            fi
+          done
+          echo "All required advanced flags are present."
+
+      - name: Configure and build LLVM with Hikari
+        run: |
+          cd hikari
+          mkdir -p build
+          cd build
+          cmake -G "Ninja" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_ENABLE_PROJECTS="clang;lld" \
+            -DLLVM_TARGETS_TO_BUILD="AArch64" \
+            -DLLVM_INCLUDE_TESTS=OFF \
+            -DLLVM_INCLUDE_EXAMPLES=OFF \
+            -DLLVM_PARALLEL_LINK_JOBS=1 \
+            -DCMAKE_INSTALL_PREFIX="$(pwd)/../install" \
+            ../llvm
+          ninja -j$(nproc)
+          ninja install
+
+      - name: Package installation
+        run: |
+          cd hikari/install
+          tar -czf hikari-eq-aarch64.tar.gz *
+          echo "ARTIFACT_PATH=$(pwd)/hikari-eq-aarch64.tar.gz" >> $GITHUB_ENV
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hikari-eq-aarch64
+          path: ${{ env.ARTIFACT_PATH }}
