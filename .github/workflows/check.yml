@@ -15,11 +15,16 @@ jobs:
       - name: Clone Equati0n/Hikari-LLVM15
         run: |
           git clone --recursive https://github.com/Equati0n/Hikari-LLVM15.git hikari
+          cd hikari
+          echo "Top-level contents:"
+          ls -la
+          echo "Contents of llvm/ (if exists):"
+          ls -la llvm 2>/dev/null || echo "llvm/ not found"
 
       - name: Verify advanced flags exist in source
         run: |
           cd hikari
-          echo "Checking for junk assembly flags..."
+          echo "Searching for junk assembly and other advanced flags..."
           FLAGS=(
             "bcf_junkasm"
             "bcf_junkasm_minnum"
@@ -28,7 +33,7 @@ jobs:
             "indibran-enc-jump-target"
           )
           for flag in "${FLAGS[@]}"; do
-            if grep -rq "$flag" llvm/ ; then
+            if grep -rq "$flag" . ; then
               echo "Found: $flag"
             else
               echo "ERROR: Flag '$flag' not found in source code!"
@@ -36,6 +41,21 @@ jobs:
             fi
           done
           echo "All required advanced flags are present."
+
+      - name: Determine LLVM source directory
+        id: llvm_src
+        run: |
+          cd hikari
+          if [ -f "CMakeLists.txt" ] && [ -d "llvm" ]; then
+            echo "LLVM source is in 'llvm' subdirectory"
+            echo "src_dir=llvm" >> $GITHUB_OUTPUT
+          elif [ -f "CMakeLists.txt" ]; then
+            echo "LLVM source is in repository root"
+            echo "src_dir=." >> $GITHUB_OUTPUT
+          else
+            echo "Could not determine LLVM source directory"
+            exit 1
+          fi
 
       - name: Configure and build LLVM with Hikari
         run: |
@@ -50,7 +70,7 @@ jobs:
             -DLLVM_INCLUDE_EXAMPLES=OFF \
             -DLLVM_PARALLEL_LINK_JOBS=1 \
             -DCMAKE_INSTALL_PREFIX="$(pwd)/../install" \
-            ../llvm
+            ../${{ steps.llvm_src.outputs.src_dir }}
           ninja -j$(nproc)
           ninja install
 
