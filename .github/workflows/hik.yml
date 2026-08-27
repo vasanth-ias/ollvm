@@ -12,9 +12,9 @@ jobs:
           sudo apt update
           sudo apt install -y cmake ninja-build gcc g++ python3 libz3-dev
 
-      - name: Clone Hikari-LLVM15
+      - name: Clone Hikari-LLVM15 (ChandHsu port)
         run: |
-          git clone --recursive -b llvm-16.0.0rel https://github.com/61bcdefg/Hikari-LLVM15.git hikari
+          git clone --recursive https://github.com/ChandHsu/Hikari-LLVM15.git hikari
 
       - name: Configure and build LLVM with Hikari
         run: |
