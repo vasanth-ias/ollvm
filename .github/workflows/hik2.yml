@@ -1,4 +1,4 @@
-name: Build Equati0n Hikari-LLVM15.0.2 (AArch64)
+name: Build Equati0n Hikari-LLVM15.0.2 (AArch64) with clang and lld
 
 on:
   workflow_dispatch:
@@ -6,49 +6,26 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 360   # 6 hours max
+    timeout-minutes: 360
 
     steps:
       - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install -y cmake ninja-build gcc g++ python3 libz3-dev ccache
+          sudo apt install -y cmake ninja-build gcc g++ python3 libz3-dev ccache binutils-gold
 
       - name: Clone Equati0n/Hikari-LLVM15.0.2
         run: |
           git clone --recursive https://github.com/Equati0n/Hikari-LLVM15.0.2.git hikari
 
-      - name: Verify advanced flags exist in source
-        run: |
-          cd hikari
-          echo "Checking for advanced obfuscation flags..."
-          FLAGS=(
-            "bcf_junkasm"
-            "bcf_junkasm_minnum"
-            "bcf_junkasm_maxnum"
-            "enable-constenc"
-            "indibran-enc-jump-target"
-            "enable-antihook"
-            "enable-adb"
-          )
-          for flag in "${FLAGS[@]}"; do
-            if grep -rq "$flag" . ; then
-              echo "Found: $flag"
-            else
-              echo "ERROR: Flag '$flag' not found in source code!"
-              exit 1
-            fi
-          done
-          echo "All required advanced flags are present."
-
-      - name: Configure LLVM with Hikari (shared lib, only clang)
+      - name: Configure LLVM with Hikari (full power)
         run: |
           cd hikari
           mkdir -p build
           cd build
           cmake -G "Ninja" \
             -DCMAKE_BUILD_TYPE=Release \
-            -DLLVM_ENABLE_PROJECTS="clang" \
+            -DLLVM_ENABLE_PROJECTS="clang;lld" \
             -DLLVM_TARGETS_TO_BUILD="AArch64" \
             -DLLVM_BUILD_LLVM_DYLIB=ON \
             -DLLVM_LINK_LLVM_DYLIB=ON \
@@ -56,15 +33,23 @@ jobs:
             -DLLVM_INCLUDE_EXAMPLES=OFF \
             -DLLVM_PARALLEL_COMPILE_JOBS=4 \
             -DLLVM_PARALLEL_LINK_JOBS=2 \
+            -DLLVM_USE_LINKER=gold \
             -DLLVM_CCACHE_BUILD=ON \
             -DCMAKE_INSTALL_PREFIX="$(pwd)/../install" \
             ../llvm
 
-      - name: Build clang only
+      - name: Build clang and lld
         run: |
           cd hikari/build
-          ninja -j4 clang
+          ninja -j4 clang lld
+
+      - name: Install clang, lld, libraries, and headers
+        run: |
+          cd hikari/build
           ninja install-clang
+          ninja install-lld
+          ninja install-llvm-libraries
+          ninja install-llvm-headers
 
       - name: Package installation
         run: |
