@@ -1,0 +1,74 @@
+name: Build Hikari-LLVM15.0.2 Toolchain (Windows)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Setup MSVC (x64)
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install Ninja + CMake (faster than choco's defaults)
+        run: |
+          choco install ninja --no-progress -y
+          choco install cmake --no-progress --install-arguments='"ADD_CMAKE_TO_PATH=System"' -y
+          cmake --version
+          ninja --version
+
+      - name: Clone Hikari-LLVM (llvm-15.0.2)
+        run: |
+          git clone --recursive -b llvm-15.0.2 https://github.com/nkhmelni/Hikari-LLVM.git hikari
+
+      - name: Configure (Release, Ninja, MSVC)
+        shell: cmd
+        run: |
+          cd hikari
+          mkdir build
+          cd build
+          cmake -G Ninja ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DLLVM_ENABLE_PROJECTS="clang" ^
+            -DLLVM_TARGETS_TO_BUILD="AArch64;ARM;X86" ^
+            -DLLVM_INCLUDE_TESTS=OFF ^
+            -DLLVM_INCLUDE_EXAMPLES=OFF ^
+            -DLLVM_INCLUDE_BENCHMARKS=OFF ^
+            -DLLVM_INCLUDE_DOCS=OFF ^
+            -DLLVM_ENABLE_TERMINFO=OFF ^
+            -DLLVM_ENABLE_ZLIB=OFF ^
+            -DLLVM_ENABLE_ZSTD=OFF ^
+            -DLLVM_ENABLE_LIBXML2=OFF ^
+            -DLLVM_ENABLE_ASSERTIONS=OFF ^
+            -DLLVM_ENABLE_LTO=OFF ^
+            -DLLVM_BUILD_LLVM_DYLIB=OFF ^
+            -DLLVM_PARALLEL_COMPILE_JOBS=4 ^
+            -DLLVM_PARALLEL_LINK_JOBS=2 ^
+            -DCMAKE_INSTALL_PREFIX="%CD%\..\install" ^
+            ..\llvm
+
+      - name: Build clang
+        shell: cmd
+        run: |
+          cd hikari\build
+          ninja clang
+          ninja install-clang
+
+      - name: Package toolchain (zip preserves nothing to break on Windows)
+        shell: pwsh
+        run: |
+          Compress-Archive -Path hikari/install/* -DestinationPath hikari-llvm15.0.2-win-x64.zip -Force
+          "ARCHIVE_PATH=$((Resolve-Path hikari-llvm15.0.2-win-x64.zip).Path)" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Upload as release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ARCHIVE_PATH }}
+          tag_name: hikari-toolchain-win
+          name: Hikari LLVM15.0.2 Toolchain (Windows)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
