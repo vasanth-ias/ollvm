@@ -2,90 +2,96 @@ name: Windowshikvmp
 
 on:
   workflow_dispatch:
-    inputs:
-      llvm_version:
-        description: "LLVM release version to build against (e.g. 22.1.0)"
-        required: true
-        default: "22.1.0"
   push:
     tags:
       - 'build-*'
 
 env:
-  LLVM_VERSION: ${{ github.event.inputs.llvm_version || '22.1.0' }}
+  LLVM_BRANCH: release/22.x
   HIKARI_REPO: https://github.com/PPKunOfficial/Hikari-fix.git
 
 jobs:
   build-windows:
     runs-on: windows-2022
-    timeout-minutes: 180
+    timeout-minutes: 360
 
     steps:
       # ------------------------------------------------------------------
-      # 1. MSVC environment (provides cl.exe, link.exe, INCLUDE, LIB)
+      # 1. Setup build environment
       # ------------------------------------------------------------------
-      - name: Setup MSVC (x64 Developer Prompt)
+      - name: Setup MSVC (x64)
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
 
-      - name: Install CMake + Ninja
+      - name: Install CMake + Ninja + Git
         shell: pwsh
         run: |
           choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System' --no-progress -y
           choco install ninja --no-progress -y
           cmake --version
           ninja --version
+          git --version
 
       # ------------------------------------------------------------------
-      # 2. Download pre-built LLVM (Windows x64)
-      #    The plugin must be built against the SAME LLVM major version
-      #    that will later load it.
+      # 2. Build LLVM 22 from source (this provides opt.exe, llc.exe, headers)
       # ------------------------------------------------------------------
-      - name: Cache LLVM installer
-        id: cache-llvm
-        uses: actions/cache@v4
+      - name: Checkout LLVM (release/22.x)
+        uses: actions/checkout@v4
         with:
-          path: C:\llvm-install
-          key: llvm-win64-${{ env.LLVM_VERSION }}
+          repository: llvm/llvm-project
+          ref: ${{ env.LLVM_BRANCH }}
+          path: llvm-project
 
-      - name: Download & install LLVM ${{ env.LLVM_VERSION }}
-        if: steps.cache-llvm.outputs.cache-hit != 'true'
+      - name: Configure LLVM (Release, Ninja)
+        shell: cmd
+        run: |
+          cd llvm-project
+          mkdir build
+          cd build
+          cmake -G Ninja ^
+            -S ../llvm ^
+            -B . ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DLLVM_ENABLE_PROJECTS="clang" ^
+            -DLLVM_TARGETS_TO_BUILD="X86;AArch64;ARM" ^
+            -DLLVM_INCLUDE_TESTS=OFF ^
+            -DLLVM_INCLUDE_EXAMPLES=OFF ^
+            -DLLVM_INCLUDE_BENCHMARKS=OFF ^
+            -DLLVM_BUILD_TOOLS=ON ^
+            -DLLVM_ENABLE_ASSERTIONS=OFF ^
+            -DLLVM_PARALLEL_COMPILE_JOBS=4 ^
+            -DLLVM_PARALLEL_LINK_JOBS=2 ^
+            -DCMAKE_INSTALL_PREFIX="%CD%\..\llvm-install"
+
+      - name: Build LLVM (opt, clang, llc)
+        shell: cmd
+        run: |
+          cd llvm-project\build
+          ninja opt clang llc
+
+      - name: Install LLVM
+        shell: cmd
+        run: |
+          cd llvm-project\build
+          ninja install
+
+      - name: Verify opt.exe exists
         shell: pwsh
         run: |
-          $ver = "${{ env.LLVM_VERSION }}"
-          $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$ver/LLVM-$ver-win64.exe"
-          Write-Host "Downloading $url"
-          Invoke-WebRequest -Uri $url -OutFile llvm-installer.exe -UseBasicParsing
-
-          # Silent NSIS install to a fixed directory
-          Start-Process -FilePath ".\llvm-installer.exe" `
-            -ArgumentList "/S", "/D=C:\llvm-install" -Wait
-
-          if (-not (Test-Path "C:\llvm-install\bin\opt.exe")) {
-            throw "LLVM install failed — opt.exe not found."
-          }
-          & "C:\llvm-install\bin\llvm-config.exe" --version
-
-      - name: Verify LLVM install
-        shell: pwsh
-        run: |
-          & "C:\llvm-install\bin\opt.exe" --version
-          & "C:\llvm-install\bin\clang.exe" --version
+          $opt = "llvm-project\llvm-install\bin\opt.exe"
+          if (-not (Test-Path $opt)) { throw "opt.exe still missing" }
+          & $opt --version
 
       # ------------------------------------------------------------------
-      # 3. Clone the Hikari-fix plugin sources
+      # 3. Build the Hikari-fix plugin against the custom LLVM
       # ------------------------------------------------------------------
       - name: Clone Hikari-fix
         shell: pwsh
         run: |
           git clone --depth=1 $env:HIKARI_REPO hikari-fix
-          Get-ChildItem hikari-fix
 
-      # ------------------------------------------------------------------
-      # 4. Configure the plugin with CMake
-      # ------------------------------------------------------------------
-      - name: Configure (Ninja, Release, shared lib)
+      - name: Configure Hikari-fix
         shell: cmd
         run: |
           cd hikari-fix
@@ -93,90 +99,64 @@ jobs:
             -DCMAKE_CXX_STANDARD=17 ^
             -DCMAKE_BUILD_TYPE=Release ^
             -DBUILD_SHARED_LIBS=ON ^
-            -DLT_LLVM_INSTALL_DIR="C:/llvm-install"
+            -DLT_LLVM_INSTALL_DIR="%CD%\..\llvm-project\llvm-install"
 
-      # ------------------------------------------------------------------
-      # 5. Build the plugin
-      # ------------------------------------------------------------------
-      - name: Build
+      - name: Build Hikari-fix plugin
         shell: cmd
         run: |
           cd hikari-fix
           cmake --build build --config Release
 
-      - name: Locate built plugin
-        shell: pwsh
-        run: |
-          $hits = Get-ChildItem -Path hikari-fix/build -Recurse -Include Hikari.dll,libHikari.dll -ErrorAction SilentlyContinue
-          if (-not $hits) {
-            Write-Host "== Contents of build/obfuscation =="
-            Get-ChildItem -Path hikari-fix/build/obfuscation -ErrorAction SilentlyContinue | Format-Table
-            throw "Hikari.dll was not produced."
-          }
-          $hits | ForEach-Object { Write-Host "Found: $($_.FullName)" }
-
       # ------------------------------------------------------------------
-      # 6. Package: plugin + matched LLVM tools + samples
+      # 4. Package everything together
       # ------------------------------------------------------------------
-      - name: Package (plugin + matched LLVM bin)
+      - name: Package
         shell: pwsh
         run: |
           $stage = "stage"
-          New-Item -ItemType Directory -Force -Path "$stage\bin"      | Out-Null
-          New-Item -ItemType Directory -Force -Path "$stage\plugin"   | Out-Null
-          New-Item -ItemType Directory -Force -Path "$stage\samples"  | Out-Null
+          New-Item -ItemType Directory -Force -Path "$stage\bin"    | Out-Null
+          New-Item -ItemType Directory -Force -Path "$stage\plugin" | Out-Null
 
-          # 1) The plugin .dll
+          # Copy the built plugin
           $dll = Get-ChildItem -Path hikari-fix/build -Recurse -Include Hikari.dll,libHikari.dll | Select-Object -First 1
+          if (-not $dll) { throw "Hikari.dll not found" }
           Copy-Item $dll.FullName "$stage\plugin\Hikari.dll"
 
-          # 2) The matched LLVM tools needed to consume the plugin
-          foreach ($exe in @("opt.exe","clang.exe","clang++.exe","llc.exe","llvm-config.exe")) {
-            $src = "C:\llvm-install\bin\$exe"
-            if (Test-Path $src) { Copy-Item $src "$stage\bin\" }
+          # Copy the matching LLVM tools we just built
+          foreach ($exe in @("opt.exe","clang.exe","clang++.exe","llc.exe")) {
+            Copy-Item "llvm-project\llvm-install\bin\$exe" "$stage\bin\"
           }
-          # 3) Supporting DLLs that opt.exe/clang.exe need at runtime
-          Get-ChildItem "C:\llvm-install\bin\*.dll" -ErrorAction SilentlyContinue |
-            Copy-Item -Destination "$stage\bin\"
 
-          # 4) Docs + sample scripts (for reference)
-          Copy-Item "hikari-fix\README.md" "$stage\" -ErrorAction SilentlyContinue
-          Copy-Item "hikari-fix\docs"      "$stage\docs" -Recurse -ErrorAction SilentlyContinue
-          Copy-Item "hikari-fix\samples\*" "$stage\samples\" -Recurse -ErrorAction SilentlyContinue
-
-          # 5) A quick sanity README
+          # Include a usage note
           @"
-          Hikari-fix plugin for Windows (LLVM $env:LLVM_VERSION)
-          =====================================================
-          plugin\Hikari.dll  -> the pass plugin
-          bin\               -> matching LLVM tools (opt.exe, clang.exe, llc.exe, ...)
+          Hikari-fix for LLVM 22 (Windows x64)
+          ===================================
+          plugin\Hikari.dll -> the pass plugin
+          bin\opt.exe, clang.exe, llc.exe -> matching LLVM tools
 
-          Usage (via opt):
+          Usage:
             bin\clang.exe -O0 -emit-llvm -c input.c -o input.bc
-            bin\opt.exe -load-pass-plugin="%CD%\plugin\Hikari.dll" ^
-                        --passes="hikari(enable-bcfobf,enable-cffobf,enable-strcry)" ^
-                        input.bc -o output.bc
+            bin\opt.exe -load-pass-plugin="%CD%\plugin\Hikari.dll" --passes="hikari(enable-bcfobf,enable-cffobf,enable-strcry)" input.bc -o output.bc
             bin\llc.exe -filetype=obj output.bc -o output.o
             bin\clang.exe output.o -o output.exe
           "@ | Out-File -Encoding ascii "$stage\README-WINDOWS.txt"
 
-          Compress-Archive -Path "$stage\*" -DestinationPath hikari-fix-llvm${{ env.LLVM_VERSION }}-win-x64.zip -Force
-          "ARCHIVE_PATH=$((Resolve-Path 'hikari-fix-llvm${{ env.LLVM_VERSION }}-win-x64.zip').Path)" |
-            Out-File -FilePath $env:GITHUB_ENV -Append
+          Compress-Archive -Path "$stage\*" -DestinationPath hikari-fix-win-x64.zip -Force
+          "ARCHIVE_PATH=$((Resolve-Path 'hikari-fix-win-x64.zip').Path)" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: hikari-fix-llvm${{ env.LLVM_VERSION }}-win-x64
+          name: hikari-fix-win-x64
           path: ${{ env.ARCHIVE_PATH }}
           retention-days: 14
 
-      - name: Upload as release asset (tagged builds only)
+      - name: Upload release asset (tagged builds only)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ env.ARCHIVE_PATH }}
-          name: Hikari-fix plugin for LLVM ${{ env.LLVM_VERSION }} (Windows x64)
+          name: Hikari-fix (LLVM 22) Windows x64
           tag_name: ${{ github.ref_name }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
