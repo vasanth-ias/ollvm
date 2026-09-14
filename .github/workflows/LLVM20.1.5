@@ -1,0 +1,111 @@
+name: Build Hikari-LLVM20.1.5 Toolchain (Windows x64)
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'build-*'
+
+jobs:
+  build-windows:
+    runs-on: windows-2022        # VS 2022 (MSVC 14.3x) — matches Hikari's build docs
+    timeout-minutes: 360
+
+    steps:
+      # ------------------------------------------------------------------
+      # 1. Toolchain / MSVC environment
+      # ------------------------------------------------------------------
+      - name: Setup MSVC (x64 Developer Prompt)
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install CMake + Ninja + Git
+        shell: pwsh
+        run: |
+          choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System' --no-progress -y
+          choco install ninja --no-progress -y
+          cmake --version
+          ninja --version
+          git --version
+
+      # ------------------------------------------------------------------
+      # 2. Fetch source
+      # ------------------------------------------------------------------
+      - name: Clone Hikari-LLVM19 (LLVM 20.1.5)
+        shell: pwsh
+        run: |
+          git clone --recursive https://github.com/Aethereux/Hikari-LLVM19.git hikari
+
+      # ------------------------------------------------------------------
+      # 3. Configure (mirrors the official Windows build instructions)
+      # ------------------------------------------------------------------
+      - name: Configure CMake (Ninja, Release, /MT)
+        shell: cmd
+        run: |
+          cd hikari
+          mkdir build
+          cd build
+          cmake -G Ninja ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded ^
+            -DCMAKE_CXX_FLAGS="/MT" ^
+            -DLLVM_ENABLE_PROJECTS="clang" ^
+            -DLLVM_TARGETS_TO_BUILD="X86;ARM;AArch64" ^
+            -DLLVM_ENABLE_ZSTD=OFF ^
+            -DLLVM_INCLUDE_TESTS=OFF ^
+            -DLLVM_INCLUDE_EXAMPLES=OFF ^
+            -DLLVM_INCLUDE_UTILS=OFF ^
+            -DLLVM_INCLUDE_BENCHMARKS=OFF ^
+            -DLLVM_BUILD_TOOLS=OFF ^
+            -DLLVM_ENABLE_ASSERTIONS=OFF ^
+            -DLLVM_PARALLEL_COMPILE_JOBS=4 ^
+            -DLLVM_PARALLEL_LINK_JOBS=2 ^
+            -DCMAKE_INSTALL_PREFIX="%CD%\..\install" ^
+            ..\llvm
+
+      # ------------------------------------------------------------------
+      # 4. Build + install
+      # ------------------------------------------------------------------
+      - name: Build clang
+        shell: cmd
+        run: |
+          cd hikari\build
+          ninja clang
+
+      - name: Install clang (produces a clean install tree)
+        shell: cmd
+        run: |
+          cd hikari\build
+          ninja install-clang
+
+      # ------------------------------------------------------------------
+      # 5. Package + upload
+      # ------------------------------------------------------------------
+      - name: Package toolchain
+        shell: pwsh
+        run: |
+          $src = "hikari/install"
+          if (-not (Test-Path $src)) { throw "install tree missing" }
+          $zip = "hikari-llvm20.1.5-win-x64.zip"
+          if (Test-Path $zip) { Remove-Item $zip }
+          Compress-Archive -Path "$src/*" -DestinationPath $zip -Force
+          "ARCHIVE_PATH=$((Resolve-Path $zip).Path)" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Get-ChildItem $zip | Format-List Name,Length
+
+      - name: Upload artifact (always available)
+        uses: actions/upload-artifact@v4
+        with:
+          name: hikari-llvm20.1.5-win-x64
+          path: ${{ env.ARCHIVE_PATH }}
+          retention-days: 14
+
+      - name: Upload as release asset (only on tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ARCHIVE_PATH }}
+          name: Hikari LLVM 20.1.5 Toolchain (Windows x64)
+          tag_name: ${{ github.ref_name }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
