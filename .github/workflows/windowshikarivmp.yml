@@ -1,4 +1,4 @@
-name: Build Hikari Android AArch64 (LLVM 22 with LLD)
+name: Build Hikari Android AArch64 (LLVM 22 + LLD)
 
 on:
   workflow_dispatch:
@@ -34,7 +34,23 @@ jobs:
           ref: ${{ env.LLVM_BRANCH }}
           path: llvm-project
 
+      # ------------------------------------------------------------
+      # Cache the LLVM build + install. First run: cold (2h).
+      # Every subsequent run: warm (~5 min).
+      # ------------------------------------------------------------
+      - name: Cache LLVM build
+        id: llvm-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            llvm-project/build
+            llvm-project/llvm-install
+          key: llvm22-aarch64-${{ runner.os }}-v1
+          restore-keys: |
+            llvm22-aarch64-${{ runner.os }}-
+
       - name: Configure LLVM (with LLD)
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
         shell: cmd
         run: |
           cd llvm-project
@@ -56,16 +72,27 @@ jobs:
             -DCMAKE_INSTALL_PREFIX="%CD%\..\llvm-install"
 
       - name: Build LLVM
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
         shell: cmd
         run: |
           cd llvm-project\build
           ninja clang lld opt llc llvm-ar llvm-ranlib llvm-objcopy llvm-strip llvm-nm llvm-readobj
 
       - name: Install LLVM
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
         shell: cmd
         run: |
           cd llvm-project\build
-          ninja install-clang install-lld install-opt install-llc install-llvm-ar install-llvm-ranlib install-llvm-objcopy install-llvm-strip install-llvm-nm install-llvm-readobj
+          ninja install
+
+      - name: Verify cache hit
+        shell: pwsh
+        run: |
+          if ("${{ steps.llvm-cache.outputs.cache-hit }}" -eq "true") {
+            Write-Host "LLVM restored from cache — skipping rebuild"
+          } else {
+            Write-Host "LLVM built from source — cache will be saved"
+          }
 
       - name: Clone Hikari-fix
         shell: pwsh
@@ -104,11 +131,20 @@ jobs:
           Copy-Item $dll.FullName "$stage\plugin\Hikari.dll"
 
           Compress-Archive -Path "$stage\*" -DestinationPath hikari-llvm22-android.zip -Force
-          "ARCHIVE_PATH=$((Resolve-Path 'hikari-llvm22-android.zip').Path)" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: hikari-llvm22-android
-          path: ${{ env.ARCHIVE_PATH }}
+          path: hikari-llvm22-android.zip
           retention-days: 14
+
+      - name: Upload release asset
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: hikari-llvm22-android.zip
+          name: Hikari LLVM 22 Android AArch64
+          tag_name: ${{ github.ref_name }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
