@@ -9,7 +9,6 @@ on:
 env:
   LLVM_BRANCH: release/22.x
   HIKARI_REPO: https://github.com/PPKunOfficial/Hikari-fix.git
-  ANDROID_TARGET: aarch64-linux-android21
 
 jobs:
   build-windows:
@@ -31,14 +30,14 @@ jobs:
           ninja --version
           git --version
 
-      - name: Checkout LLVM (release/22.x)
+      - name: Checkout LLVM
         uses: actions/checkout@v4
         with:
           repository: llvm/llvm-project
           ref: ${{ env.LLVM_BRANCH }}
           path: llvm-project
 
-      - name: Configure LLVM (Release, Ninja, AArch64 only)
+      - name: Configure LLVM
         shell: cmd
         run: |
           cd llvm-project
@@ -59,7 +58,7 @@ jobs:
             -DLLVM_PARALLEL_LINK_JOBS=2 ^
             -DCMAKE_INSTALL_PREFIX="%CD%\..\llvm-install"
 
-      - name: Build LLVM (opt, clang, llc)
+      - name: Build LLVM
         shell: cmd
         run: |
           cd llvm-project\build
@@ -107,41 +106,6 @@ jobs:
             Copy-Item "llvm-project\llvm-install\bin\$exe" "$stage\bin\"
           }
 
-          @"
-Hikari-fix for Android AArch64 (LLVM 22, Windows x64)
-=====================================================
-Custom LLVM 22 toolchain with Hikari plugin, built for AArch64 (ARM64) only.
-Use these tools in Android Studio instead of the NDK's built-in LLVM.
-
-Contents:
-  plugin\Hikari.dll             -> the pass plugin
-  bin\opt.exe, clang.exe, llc.exe -> LLVM 22 tools (AArch64 target only)
-
-Android Studio / CMake integration (arm64-v8a only):
-
-  set(CMAKE_C_COMPILER   "C:/path/to/bin/clang.exe")
-  set(CMAKE_CXX_COMPILER "C:/path/to/bin/clang++.exe")
-  set(CMAKE_SYSROOT "C:/Android/Sdk/ndk/<version>/toolchains/llvm/prebuilt/windows-x86_64/sysroot")
-  set(CMAKE_C_FLAGS   "--target=$env:ANDROID_TARGET")
-  set(CMAKE_CXX_FLAGS "--target=$env:ANDROID_TARGET")
-
-Manual obfuscation pipeline (arm64-v8a):
-
-  bin\clang.exe --target=$env:ANDROID_TARGET -O0 -emit-llvm -c input.c -o input.bc
-  bin\opt.exe -load-pass-plugin="plugin\Hikari.dll" --passes="hikari(enable-bcfobf,enable-cffobf,enable-strcry)" input.bc -o output.bc
-  bin\llc.exe -mtriple=aarch64-linux-android21 -filetype=obj output.bc -o output.o
-
-Flags that work for C++ on Android AArch64:
-  enable-bcfobf, enable-cffobf, enable-splitobf, enable-subobf,
-  enable-strcry, enable-constenc, enable-indibran, enable-fco,
-  enable-vmp        (limited IR support: no varargs, exceptions, floats, vectors)
-  enable-antihook   (AArch64 only - works here)
-  enable-allobf     (bcf + cff + sub + split + strcry + indibran + fco)
-
-Note: enable-antihook is specifically an AArch64 pass, so it is now usable
-since we built only the AArch64 backend.
-"@ | Out-File -Encoding ascii "$stage\README-ANDROID-AARCH64.txt"
-
           Compress-Archive -Path "$stage\*" -DestinationPath hikari-android-aarch64-win-x64.zip -Force
           "ARCHIVE_PATH=$((Resolve-Path 'hikari-android-aarch64-win-x64.zip').Path)" | Out-File -FilePath $env:GITHUB_ENV -Append
 
@@ -152,7 +116,7 @@ since we built only the AArch64 backend.
           path: ${{ env.ARCHIVE_PATH }}
           retention-days: 14
 
-      - name: Upload release asset (tagged builds only)
+      - name: Upload release asset
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
