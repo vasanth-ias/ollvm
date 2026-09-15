@@ -1,4 +1,4 @@
-name: Build Hikari Android AArch64 (LLVM 22 + LLD)
+name: Build Hikari LLVM 22 Android AArch64 (Windows)
 
 on:
   workflow_dispatch:
@@ -11,65 +11,81 @@ env:
   HIKARI_REPO: https://github.com/PPKunOfficial/Hikari-fix.git
 
 jobs:
-  build-windows:
+  build:
     runs-on: windows-2022
     timeout-minutes: 360
 
     steps:
+      # ------------------------------------------------------------------
+      # 1. Environment
+      # ------------------------------------------------------------------
       - name: Setup MSVC (x64)
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
 
-      - name: Install CMake + Ninja + Git
+      - name: Install CMake + Ninja
         shell: pwsh
         run: |
           choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System' --no-progress -y
           choco install ninja --no-progress -y
+          cmake --version
+          ninja --version
 
-      - name: Checkout LLVM
+      # ------------------------------------------------------------------
+      # 2. Checkout LLVM
+      # ------------------------------------------------------------------
+      - name: Checkout LLVM (${{ env.LLVM_BRANCH }})
         uses: actions/checkout@v4
         with:
           repository: llvm/llvm-project
           ref: ${{ env.LLVM_BRANCH }}
           path: llvm-project
 
-      # ------------------------------------------------------------
-      # Cache the LLVM build + install. First run: cold (2h).
-      # Every subsequent run: warm (~5 min).
-      # ------------------------------------------------------------
-      - name: Cache LLVM build
+      # ------------------------------------------------------------------
+      # 3. Cache LLVM build (first run ~2h, subsequent runs ~5min)
+      # ------------------------------------------------------------------
+      - name: Cache LLVM build + install
         id: llvm-cache
         uses: actions/cache@v4
         with:
           path: |
             llvm-project/build
             llvm-project/llvm-install
-          key: llvm22-aarch64-${{ runner.os }}-v1
+          key: llvm22-aarch64-win-v3
           restore-keys: |
-            llvm22-aarch64-${{ runner.os }}-
+            llvm22-aarch64-win-
 
-      - name: Configure LLVM (with LLD)
+      # ------------------------------------------------------------------
+      # 4. Configure / build / install LLVM (skipped on cache hit)
+      # ------------------------------------------------------------------
+      - name: Configure LLVM
         if: steps.llvm-cache.outputs.cache-hit != 'true'
         shell: cmd
         run: |
           cd llvm-project
-          mkdir build
+          if not exist build mkdir build
           cd build
           cmake -G Ninja ^
             -S ../llvm ^
             -B . ^
             -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_INSTALL_PREFIX="%CD%\..\llvm-install" ^
             -DLLVM_ENABLE_PROJECTS="clang;lld" ^
             -DLLVM_TARGETS_TO_BUILD="AArch64" ^
             -DLLVM_INCLUDE_TESTS=OFF ^
             -DLLVM_INCLUDE_EXAMPLES=OFF ^
             -DLLVM_INCLUDE_BENCHMARKS=OFF ^
+            -DLLVM_INCLUDE_DOCS=OFF ^
             -DLLVM_BUILD_TOOLS=ON ^
+            -DLLVM_BUILD_UTILS=OFF ^
             -DLLVM_ENABLE_ASSERTIONS=OFF ^
+            -DLLVM_ENABLE_TERMINFO=OFF ^
+            -DLLVM_ENABLE_ZLIB=OFF ^
+            -DLLVM_ENABLE_ZSTD=OFF ^
+            -DLLVM_ENABLE_LIBXML2=OFF ^
             -DLLVM_PARALLEL_COMPILE_JOBS=4 ^
-            -DLLVM_PARALLEL_LINK_JOBS=2 ^
-            -DCMAKE_INSTALL_PREFIX="%CD%\..\llvm-install"
+            -DLLVM_PARALLEL_LINK_JOBS=2
 
       - name: Build LLVM
         if: steps.llvm-cache.outputs.cache-hit != 'true'
@@ -85,15 +101,20 @@ jobs:
           cd llvm-project\build
           ninja install
 
-      - name: Verify cache hit
+      - name: Verify LLVM install
         shell: pwsh
         run: |
-          if ("${{ steps.llvm-cache.outputs.cache-hit }}" -eq "true") {
-            Write-Host "LLVM restored from cache — skipping rebuild"
-          } else {
-            Write-Host "LLVM built from source — cache will be saved"
-          }
+          $cfg = "llvm-project\llvm-install\lib\cmake\llvm\LLVMConfig.cmake"
+          if (-not (Test-Path $cfg)) { throw "LLVMConfig.cmake missing — install failed" }
+          $opt = "llvm-project\llvm-install\bin\opt.exe"
+          if (-not (Test-Path $opt)) { throw "opt.exe missing" }
+          $lld = "llvm-project\llvm-install\bin\ld.lld.exe"
+          if (-not (Test-Path $lld)) { throw "ld.lld.exe missing" }
+          Write-Host "LLVM install OK"
 
+      # ------------------------------------------------------------------
+      # 5. Build Hikari-fix plugin
+      # ------------------------------------------------------------------
       - name: Clone Hikari-fix
         shell: pwsh
         run: git clone --depth=1 $env:HIKARI_REPO hikari-fix
@@ -103,10 +124,11 @@ jobs:
         run: |
           cd hikari-fix
           cmake -G Ninja -S . -B build ^
-            -DCMAKE_CXX_STANDARD=17 ^
             -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_CXX_STANDARD=17 ^
             -DBUILD_SHARED_LIBS=ON ^
-            -DLT_LLVM_INSTALL_DIR="%CD%\..\llvm-project\llvm-install"
+            -DLT_LLVM_INSTALL_DIR="%CD%\..\llvm-project\llvm-install" ^
+            -DLLVM_DIR="%CD%\..\llvm-project\llvm-install\lib\cmake\llvm"
 
       - name: Build Hikari-fix plugin
         shell: cmd
@@ -114,24 +136,51 @@ jobs:
           cd hikari-fix
           cmake --build build --config Release
 
+      - name: Verify Hikari.dll
+        shell: pwsh
+        run: |
+          $dll = Get-ChildItem -Path hikari-fix/build -Recurse -Include Hikari.dll,libHikari.dll | Select-Object -First 1
+          if (-not $dll) { throw "Hikari.dll was not built" }
+          Write-Host "Found plugin: $($dll.FullName)"
+
+      # ------------------------------------------------------------------
+      # 6. Package everything into one zip
+      # ------------------------------------------------------------------
       - name: Package
         shell: pwsh
         run: |
           $stage = "stage"
+          if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
           New-Item -ItemType Directory -Force -Path "$stage\bin"    | Out-Null
           New-Item -ItemType Directory -Force -Path "$stage\plugin" | Out-Null
 
-          foreach ($exe in @("clang.exe","clang++.exe","clang-cl.exe","opt.exe","llc.exe","lld.exe","ld.lld.exe","llvm-ar.exe","llvm-ranlib.exe","llvm-objcopy.exe","llvm-strip.exe","llvm-nm.exe","llvm-readobj.exe")) {
-            $p = "llvm-project\llvm-install\bin\$exe"
-            if (Test-Path $p) { Copy-Item $p "$stage\bin\" }
+          $tools = @(
+            "clang.exe","clang++.exe","clang-cl.exe",
+            "opt.exe","llc.exe",
+            "lld.exe","ld.lld.exe",
+            "llvm-ar.exe","llvm-ranlib.exe","llvm-objcopy.exe",
+            "llvm-strip.exe","llvm-nm.exe","llvm-readobj.exe"
+          )
+          $missing = @()
+          foreach ($exe in $tools) {
+            $src = "llvm-project\llvm-install\bin\$exe"
+            if (Test-Path $src) {
+              Copy-Item $src "$stage\bin\"
+            } else {
+              $missing += $exe
+            }
           }
+          if ($missing.Count -gt 0) { throw "Missing tools: $($missing -join ', ')" }
 
           $dll = Get-ChildItem -Path hikari-fix/build -Recurse -Include Hikari.dll,libHikari.dll | Select-Object -First 1
-          if (-not $dll) { throw "Hikari.dll not found" }
           Copy-Item $dll.FullName "$stage\plugin\Hikari.dll"
 
           Compress-Archive -Path "$stage\*" -DestinationPath hikari-llvm22-android.zip -Force
+          Write-Host "Created hikari-llvm22-android.zip"
 
+      # ------------------------------------------------------------------
+      # 7. Upload
+      # ------------------------------------------------------------------
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -144,7 +193,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: hikari-llvm22-android.zip
-          name: Hikari LLVM 22 Android AArch64
+          name: Hikari LLVM 22 Android AArch64 (Windows)
           tag_name: ${{ github.ref_name }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
