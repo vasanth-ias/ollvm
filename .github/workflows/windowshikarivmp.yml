@@ -1,14 +1,13 @@
-name: Build Hikari for Android AArch64 (Custom LLVM 22)
+name: Build Clang for Android AArch64
 
 on:
   workflow_dispatch:
   push:
     tags:
-      - 'build-ndk-*'
+      - 'build-*'
 
 env:
   LLVM_BRANCH: release/22.x
-  HIKARI_REPO: https://github.com/PPKunOfficial/Hikari-fix.git
 
 jobs:
   build-windows:
@@ -58,11 +57,11 @@ jobs:
             -DLLVM_PARALLEL_LINK_JOBS=2 ^
             -DCMAKE_INSTALL_PREFIX="%CD%\..\llvm-install"
 
-      - name: Build LLVM
+      - name: Build Clang
         shell: cmd
         run: |
           cd llvm-project\build
-          ninja opt clang llc
+          ninja clang
 
       - name: Install LLVM
         shell: cmd
@@ -70,49 +69,24 @@ jobs:
           cd llvm-project\build
           ninja install
 
-      - name: Clone Hikari-fix
-        shell: pwsh
-        run: |
-          git clone --depth=1 $env:HIKARI_REPO hikari-fix
-
-      - name: Configure Hikari-fix
-        shell: cmd
-        run: |
-          cd hikari-fix
-          cmake -G Ninja -S . -B build ^
-            -DCMAKE_CXX_STANDARD=17 ^
-            -DCMAKE_BUILD_TYPE=Release ^
-            -DBUILD_SHARED_LIBS=ON ^
-            -DLT_LLVM_INSTALL_DIR="%CD%\..\llvm-project\llvm-install"
-
-      - name: Build Hikari-fix plugin
-        shell: cmd
-        run: |
-          cd hikari-fix
-          cmake --build build --config Release
-
       - name: Package
         shell: pwsh
         run: |
           $stage = "stage"
-          New-Item -ItemType Directory -Force -Path "$stage\bin"    | Out-Null
-          New-Item -ItemType Directory -Force -Path "$stage\plugin" | Out-Null
+          New-Item -ItemType Directory -Force -Path "$stage\bin" | Out-Null
 
-          $dll = Get-ChildItem -Path hikari-fix/build -Recurse -Include Hikari.dll,libHikari.dll | Select-Object -First 1
-          if (-not $dll) { throw "Hikari.dll not found" }
-          Copy-Item $dll.FullName "$stage\plugin\Hikari.dll"
-
-          foreach ($exe in @("opt.exe","clang.exe","clang++.exe","llc.exe")) {
-            Copy-Item "llvm-project\llvm-install\bin\$exe" "$stage\bin\"
+          foreach ($exe in @("clang.exe","clang++.exe","clang-cl.exe","llvm-ar.exe","llvm-objcopy.exe","llvm-strip.exe","llvm-nm.exe","llvm-readobj.exe")) {
+            $p = "llvm-project\llvm-install\bin\$exe"
+            if (Test-Path $p) { Copy-Item $p "$stage\bin\" }
           }
 
-          Compress-Archive -Path "$stage\*" -DestinationPath hikari-android-aarch64-win-x64.zip -Force
-          "ARCHIVE_PATH=$((Resolve-Path 'hikari-android-aarch64-win-x64.zip').Path)" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Compress-Archive -Path "$stage\*" -DestinationPath clang-android-aarch64-win-x64.zip -Force
+          "ARCHIVE_PATH=$((Resolve-Path 'clang-android-aarch64-win-x64.zip').Path)" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: hikari-android-aarch64-win-x64
+          name: clang-android-aarch64-win-x64
           path: ${{ env.ARCHIVE_PATH }}
           retention-days: 14
 
@@ -121,7 +95,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ env.ARCHIVE_PATH }}
-          name: Hikari-fix for Android AArch64 (LLVM 22) Windows x64
+          name: Clang for Android AArch64 (LLVM 22) Windows x64
           tag_name: ${{ github.ref_name }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
