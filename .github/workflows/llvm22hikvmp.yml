@@ -1,0 +1,100 @@
+name: Build Hikari-LLVM22 Toolchain (Linux)
+
+on:
+  workflow_dispatch:
+
+env:
+  # Using main or a specific release branch for LLVM
+  LLVM_BRANCH: main 
+  HIKARI_REPO: https://github.com/PPKunOfficial/Hikari-fix.git
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Free Disk Space (Ubuntu)
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf "/usr/local/share/boost"
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y cmake ninja-build gcc g++ python3 libz3-dev binutils-gold lld
+
+      - name: Clone LLVM Project
+        uses: actions/checkout@v4
+        with:
+          repository: llvm/llvm-project
+          ref: ${{ env.LLVM_BRANCH }}
+          path: llvm-project
+
+      - name: Build Clang & LLVM with AArch64 support
+        run: |
+          cd llvm-project
+          mkdir -p build install
+          cd build
+          
+          cmake -G "Ninja" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_ENABLE_PROJECTS="clang;lld" \
+            -DLLVM_TARGETS_TO_BUILD="AArch64" \
+            -DLLVM_BUILD_LLVM_DYLIB=ON \
+            -DLLVM_LINK_LLVM_DYLIB=ON \
+            -DLLVM_INCLUDE_TESTS=OFF \
+            -DLLVM_INCLUDE_EXAMPLES=OFF \
+            -DLLVM_PARALLEL_COMPILE_JOBS=4 \
+            -DLLVM_PARALLEL_LINK_JOBS=2 \
+            -DLLVM_USE_LINKER=lld \
+            -DCMAKE_INSTALL_PREFIX="$(pwd)/../install" \
+            ../llvm
+            
+          ninja
+          ninja install
+
+      - name: Clone PPKunOfficial/Hikari-fix
+        run: |
+          git clone --depth=1 ${{ env.HIKARI_REPO }} hikari-fix
+
+      - name: Build Hikari-fix Plugin (libHikari.so)
+        run: |
+          LLVM_INSTALL_DIR="$(pwd)/llvm-project/install"
+          cd hikari-fix
+          mkdir -p build
+          cd build
+          
+          cmake -G "Ninja" .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_STANDARD=17 \
+            -DBUILD_SHARED_LIBS=ON \
+            -DLT_LLVM_INSTALL_DIR="$LLVM_INSTALL_DIR" \
+            -DLLVM_DIR="$LLVM_INSTALL_DIR/lib/cmake/llvm"
+            
+          ninja
+
+      - name: Package toolchain (tar.gz)
+        run: |
+          # Create a plugin folder inside the LLVM install directory
+          mkdir -p llvm-project/install/plugin
+          
+          # Copy the compiled Hikari plugin into the toolchain
+          cp hikari-fix/build/obfuscation/libHikari.so llvm-project/install/plugin/
+          
+          cd llvm-project/install
+          tar -czf ../../hikari-llvm22-linux-aarch64.tar.gz *
+          
+          cd ../../
+          echo "ARCHIVE_PATH=$(pwd)/hikari-llvm22-linux-aarch64.tar.gz" >> $GITHUB_ENV
+
+      - name: Upload as release asset (or artifact)
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ARCHIVE_PATH }}
+          tag_name: hikari-llvm22-linux
+          name: Hikari LLVM22 Toolchain (Linux)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
