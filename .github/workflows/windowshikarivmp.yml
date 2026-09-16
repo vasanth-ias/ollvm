@@ -144,10 +144,10 @@ jobs:
           if (-not $dll) { throw "Hikari.dll was not built" }
           Write-Host "Found plugin: $($dll.FullName)"
 
-          # Verify the plugin entry point is exported
-          $nm = "llvm-project\llvm-install\bin\llvm-nm.exe"
-          $symbols = & $nm --defined-only $dll.FullName | Out-String
-          if ($symbols -notmatch "llvmGetPassPluginInfo") {
+          $ro = "llvm-project\llvm-install\bin\llvm-readobj.exe"
+          $out = & $ro --coff-exports $dll.FullName | Out-String
+          Write-Host $out
+          if ($out -notmatch "llvmGetPassPluginInfo") {
             throw "llvmGetPassPluginInfo is NOT exported — plugin will fail to load"
           }
           Write-Host "llvmGetPassPluginInfo exported OK"
