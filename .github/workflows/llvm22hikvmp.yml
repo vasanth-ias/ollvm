@@ -4,7 +4,6 @@ on:
   workflow_dispatch:
 
 env:
-  # Using main or a specific release branch for LLVM
   LLVM_BRANCH: main 
   HIKARI_REPO: https://github.com/PPKunOfficial/Hikari-fix.git
 
@@ -86,15 +85,10 @@ jobs:
           
           cd llvm-project/install
           tar -czf ../../hikari-llvm22-linux-aarch64.tar.gz *
-          
-          cd ../../
-          echo "ARCHIVE_PATH=$(pwd)/hikari-llvm22-linux-aarch64.tar.gz" >> $GITHUB_ENV
 
-      - name: Upload as release asset (or artifact)
-        uses: softprops/action-gh-release@v2
+      - name: Upload Toolchain to Artifacts
+        uses: actions/upload-artifact@v4
         with:
-          files: ${{ env.ARCHIVE_PATH }}
-          tag_name: hikari-llvm22-linux
-          name: Hikari LLVM22 Toolchain (Linux)
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: hikari-llvm22-linux-aarch64
+          path: hikari-llvm22-linux-aarch64.tar.gz
+          retention-days: 14
