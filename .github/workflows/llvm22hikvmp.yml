@@ -4,7 +4,8 @@ on:
   workflow_dispatch:
 
 env:
-  LLVM_BRANCH: main 
+  # Using the stable LLVM 22 release branch to prevent C++ API breakages
+  LLVM_BRANCH: release/22.x 
   HIKARI_REPO: https://github.com/PPKunOfficial/Hikari-fix.git
 
 jobs:
