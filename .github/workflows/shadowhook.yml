@@ -1,0 +1,147 @@
+name: Build libvasanth.so (Native Only)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'app/src/main/cpp/**'
+      - '.github/workflows/build.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      # ===================================================================
+      # Android NDK r25c
+      # ===================================================================
+      - name: Download Android NDK r25c
+        run: |
+          wget -q https://dl.google.com/android/repository/android-ndk-r25c-linux.zip
+          unzip -q android-ndk-r25c-linux.zip
+          echo "NDK_DIR=$(pwd)/android-ndk-r25c" >> $GITHUB_ENV
+
+      # ===================================================================
+      # Build libshadowhook.a (static) from source
+      # ===================================================================
+      - name: Clone ShadowHook source (v2.0.1)
+        run: |
+          git clone --depth 1 --branch v2.0.1 \
+            https://github.com/bytedance/android-inline-hook.git shadowhook-src
+
+      - name: Build libshadowhook.a (static, arm64-v8a)
+        run: |
+          set -e
+          export NDK_DIR=$(pwd)/android-ndk-r25c
+          TOOLCHAIN="$NDK_DIR/build/cmake/android.toolchain.cmake"
+
+          cmake -S shadowhook-src/shadowhook/src/main/cpp \
+                -B shadowhook-build \
+                -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
+                -DANDROID_ABI=arm64-v8a \
+                -DANDROID_PLATFORM=android-21 \
+                -DSHADOWHOOK_STATIC=ON \
+                -DCMAKE_BUILD_TYPE=Release
+
+          cmake --build shadowhook-build --target shadowhook -j$(nproc)
+
+          SHADOWHOOK_A=$(find shadowhook-build -name "libshadowhook.a" | head -n1)
+          echo "SHADOWHOOK_A=$SHADOWHOOK_A"
+          cp "$SHADOWHOOK_A" app/src/main/cpp/libshadowhook.a
+
+          # Stage the public headers next to vasanth.cpp
+          mkdir -p app/src/main/cpp/shadowhook
+          find shadowhook-src/shadowhook/src/main/cpp/include -name "*.h" \
+            -exec cp {} app/src/main/cpp/shadowhook/ \;
+          ls -lh app/src/main/cpp/libshadowhook.a
+          ls -lh app/src/main/cpp/shadowhook/
+
+      # ===================================================================
+      # Compile vasanth.cpp — standard NDK clang
+      # ===================================================================
+      - name: Compile vasanth.cpp
+        working-directory: app/src/main/cpp
+        run: |
+          export PATH="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
+          TARGET=aarch64-linux-android
+          API=21
+          SYSROOT="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+
+          clang++ --target=$TARGET$API --sysroot=$SYSROOT \
+            -c vasanth.cpp -o vasanth.o \
+            -I. \
+            -Ishadowhook \
+            -Oz -fno-unroll-loops -fPIC -std=c++17 -stdlib=libc++ \
+            -fno-rtti -fno-exceptions \
+            -fvisibility=hidden -fvisibility-inlines-hidden \
+            -fomit-frame-pointer \
+            -ffunction-sections -fdata-sections -fmerge-all-constants \
+            -DNDEBUG
+
+      - name: Create exports map
+        working-directory: app/src/main/cpp
+        run: |
+          cat > exports.map << 'EOF'
+          {
+            global:
+              JNI_OnLoad;
+            local:
+              *;
+          };
+          EOF
+
+      # ===================================================================
+      # Link libvasanth.so with static libshadowhook.a
+      # ===================================================================
+      - name: Link libvasanth.so
+        working-directory: app/src/main/cpp
+        run: |
+          export PATH="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
+          TARGET=aarch64-linux-android
+          API=21
+          SYSROOT="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+          STATIC_LIBCXX_DIR="$SYSROOT/usr/lib/$TARGET/$API"
+
+          $NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/clang++ \
+            --target=$TARGET$API --sysroot=$SYSROOT -shared \
+            vasanth.o -o libvasanth.so \
+            -stdlib=libc++ -nostdlib++ -L$STATIC_LIBCXX_DIR \
+            -Wl,-Bstatic -lc++ -lc++abi -Wl,-Bdynamic \
+            -Wl,-s -Wl,--strip-all -Wl,--gc-sections -Wl,--icf=all -Wl,-O3 \
+            -Wl,--exclude-libs,ALL -Wl,-z,relro -Wl,-z,now \
+            -Wl,-z,noexecstack -Wl,--hash-style=gnu -Wl,--build-id=none \
+            -Wl,--version-script=exports.map -fuse-ld=lld \
+            -Wl,--start-group \
+              libshadowhook.a \
+            -Wl,--end-group \
+            -lz -llog -ldl -latomic -lm -lunwind
+
+      # ===================================================================
+      # Verify
+      # ===================================================================
+      - name: Verify libvasanth.so
+        working-directory: app/src/main/cpp
+        run: |
+          NM="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
+          SIZE="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-size"
+          echo "=== Exported symbols ==="
+          "$NM" -D --defined-only libvasanth.so | grep JNI_OnLoad || echo "JNI_OnLoad MISSING"
+          echo ""
+          echo "=== Section sizes ==="
+          "$SIZE" -A libvasanth.so | sort -k2 -n
+          echo ""
+          echo "=== Filesize ==="
+          ls -lh libvasanth.so
+
+      - name: Upload libvasanth.so
+        uses: actions/upload-artifact@v4
+        with:
+          name: libvasanth-native
+          path: app/src/main/cpp/libvasanth.so
