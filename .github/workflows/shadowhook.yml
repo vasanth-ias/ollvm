@@ -16,17 +16,50 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # ===================================================================
+      # Install CMake 4.0.3 (required by ShadowHook v2.0.1)
+      # ===================================================================
+      - name: Install CMake 4.0.3
+        uses: lukka/get-cmake@latest
+        with:
+          cmakeVersion: "4.0.3"
+
+      # ===================================================================
+      # Download Android NDK r25c
+      # ===================================================================
       - name: Download Android NDK r25c
         run: |
           wget -q https://dl.google.com/android/repository/android-ndk-r25c-linux.zip
           unzip -q android-ndk-r25c-linux.zip
           echo "NDK_DIR=$(pwd)/android-ndk-r25c" >> $GITHUB_ENV
 
+      # ===================================================================
+      # Clone ShadowHook source
+      # ===================================================================
       - name: Clone ShadowHook source (v2.0.1)
         run: |
           git clone --depth 1 --branch v2.0.1 \
             https://github.com/bytedance/android-inline-hook.git shadowhook-src
 
+      # ===================================================================
+      # PATCH: Relax compiler warnings and switch to STATIC library
+      # ===================================================================
+      - name: Patch ShadowHook CMakeLists.txt
+        run: |
+          CM_FILE="shadowhook-src/shadowhook/src/main/cpp/CMakeLists.txt"
+          
+          # 1. Remove the strict -Weverything -Werror flags
+          sed -i 's/-Weverything -Werror//' "$CM_FILE"
+          
+          # 2. Change the library type from SHARED to STATIC
+          sed -i 's/add_library(${TARGET} SHARED ${SRC})/add_library(${TARGET} STATIC ${SRC})/' "$CM_FILE"
+          
+          echo "--- Patched CMakeLists.txt (relevant lines) ---"
+          grep -n "add_library\|target_compile_options" "$CM_FILE"
+
+      # ===================================================================
+      # Build libshadowhook.a (static, arm64-v8a)
+      # ===================================================================
       - name: Build libshadowhook.a (static, arm64-v8a)
         run: |
           set -e
@@ -38,17 +71,19 @@ jobs:
                 -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
                 -DANDROID_ABI=arm64-v8a \
                 -DANDROID_PLATFORM=android-21 \
-                -DSHADOWHOOK_STATIC=ON \
                 -DCMAKE_BUILD_TYPE=Release
 
           cmake --build shadowhook-build --target shadowhook -j$(nproc)
 
           SHADOWHOOK_A=$(find shadowhook-build -name "libshadowhook.a" | head -n1)
-          echo "Found: $SHADOWHOOK_A"
+          echo "Found static library: $SHADOWHOOK_A"
           mkdir -p output
           cp "$SHADOWHOOK_A" output/libshadowhook.a
           ls -lh output/
 
+      # ===================================================================
+      # Stage headers
+      # ===================================================================
       - name: Stage headers
         run: |
           mkdir -p output/include
@@ -56,6 +91,9 @@ jobs:
             -exec cp {} output/include/ \;
           ls -lh output/include/
 
+      # ===================================================================
+      # Upload artifact
+      # ===================================================================
       - name: Upload libshadowhook.a
         uses: actions/upload-artifact@v4
         with:
