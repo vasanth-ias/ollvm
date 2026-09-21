@@ -17,12 +17,28 @@ jobs:
         uses: actions/checkout@v4
 
       # ===================================================================
-      # Install CMake (ShadowHook v2.0.1 needs >= 3.19; 3.22 is safe)
+      # Install CMake 4.0.3 MANUALLY and force it to the front of PATH.
+      # (lukka/get-cmake installs it but the runner's preinstalled 3.22.6
+      # still wins because it sits earlier in PATH.)
       # ===================================================================
-      - name: Install CMake
-        uses: lukka/get-cmake@latest
-        with:
-          cmakeVersion: "3.22.6"
+      - name: Install CMake 4.0.3 (manual, forced PATH)
+        run: |
+          set -e
+          wget -q https://github.com/Kitware/CMake/releases/download/v4.0.3/cmake-4.0.3-linux-x86_64.tar.gz
+          tar -xzf cmake-4.0.3-linux-x86_64.tar.gz -C /opt
+          echo "/opt/cmake-4.0.3-linux-x86_64/bin" >> $GITHUB_PATH
+          # also export for the rest of THIS step
+          export PATH="/opt/cmake-4.0.3-linux-x86_64/bin:$PATH"
+          echo "cmake version: $(cmake --version | head -n1)"
+          which cmake
+
+      # ===================================================================
+      # Verify CMake 4.x is actually the one being used from now on
+      # ===================================================================
+      - name: Verify CMake
+        run: |
+          which cmake
+          cmake --version
 
       # ===================================================================
       # Download Android NDK r25c
@@ -40,14 +56,12 @@ jobs:
         run: |
           git clone --depth 1 --branch v2.0.1 \
             https://github.com/bytedance/android-inline-hook.git shadowhook-src
-          echo "--- Top-level CMakeLists ---"
+          echo "--- CMakeLists locations ---"
           find shadowhook-src/shadowhook/src/main/cpp -name "CMakeLists.txt"
 
       # ===================================================================
       # PATCH: relax warnings, make MAIN lib static.
-      # NOTE: we only patch the main shadowhook CMakeLists — the
-      #       shadowhook_nothing subdirectory MUST stay SHARED because
-      #       ShadowHook dlopen()s it at runtime.
+      # shadowhook_nothing MUST stay SHARED (it is dlopen()ed at runtime).
       # ===================================================================
       - name: Patch ShadowHook CMakeLists.txt
         run: |
@@ -56,28 +70,22 @@ jobs:
           echo "=== BEFORE ==="
           grep -n "add_library\|target_compile_options\|add_subdirectory" "$CM_FILE" || true
 
-          # Relax warnings so the build doesn't fail on newer compilers
           sed -i 's/-Weverything -Werror//g' "$CM_FILE"
-
-          # Change the MAIN library from SHARED to STATIC.
-          # We match either spelling just in case.
-          sed -i 's/add_library(${TARGET} SHARED ${SRC})/add_library(${TARGET} STATIC ${SRC})/' "$CM_FILE"
           sed -i 's/add_library(${TARGET} SHARED ${SRC})/add_library(${TARGET} STATIC ${SRC})/g' "$CM_FILE"
 
           echo "=== AFTER ==="
           grep -n "add_library\|target_compile_options\|add_subdirectory" "$CM_FILE" || true
 
-          # Sanity: make sure the nothing subdir is added.
-          if ! grep -q "add_subdirectory" "$CM_FILE"; then
-            echo "WARNING: no add_subdirectory() found in main CMakeLists — nothing lib might not build"
-          fi
-
       # ===================================================================
-      # Build EVERYTHING (static shadowhook + shared shadowhook_nothing)
+      # Build EVERYTHING
       # ===================================================================
       - name: Build ShadowHook (static + nothing)
         run: |
           set -e
+          # Force CMake 4.0.3 to the front of PATH for this step too.
+          export PATH="/opt/cmake-4.0.3-linux-x86_64/bin:$PATH"
+          echo "Using: $(which cmake) — $(cmake --version | head -n1)"
+
           export NDK_DIR=$(pwd)/android-ndk-r25c
           TOOLCHAIN="$NDK_DIR/build/cmake/android.toolchain.cmake"
 
@@ -88,8 +96,7 @@ jobs:
                 -DANDROID_PLATFORM=android-21 \
                 -DCMAKE_BUILD_TYPE=Release
 
-          # IMPORTANT: no --target flag. We want every target built,
-          # including shadowhook_nothing which lives in a subdirectory.
+          # Build ALL targets (do NOT pass --target)
           cmake --build shadowhook-build -j$(nproc)
 
           echo "=== All built libs ==="
@@ -103,8 +110,7 @@ jobs:
           fi
           if [ -z "$SHADOWHOOK_NOTHING_SO" ]; then
             echo "ERROR: libshadowhook_nothing.so not found"
-            echo "--- Search results ---"
-            find shadowhook-build -name "*nothing*" || true
+            find shadowhook-build -iname "*nothing*" || true
             exit 1
           fi
 
@@ -112,7 +118,7 @@ jobs:
           echo "Nothing lib : $SHADOWHOOK_NOTHING_SO"
 
           mkdir -p output
-          cp "$SHADOWHOOK_A"         output/libshadowhook.a
+          cp "$SHADOWHOOK_A"          output/libshadowhook.a
           cp "$SHADOWHOOK_NOTHING_SO" output/libshadowhook_nothing.so
 
           echo "=== output/ ==="
