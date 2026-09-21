@@ -1,4 +1,4 @@
-name: Build libshadowhook.a (static, arm64-v8a)
+name: Build libshadowhook.a + libshadowhook_nothing.so (arm64-v8a)
 
 on:
   workflow_dispatch:
@@ -10,19 +10,19 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       # ===================================================================
-      # Install CMake 4.0.3 (required by ShadowHook v2.0.1)
+      # Install CMake (ShadowHook v2.0.1 needs >= 3.19; 3.22 is safe)
       # ===================================================================
-      - name: Install CMake 4.0.3
+      - name: Install CMake
         uses: lukka/get-cmake@latest
         with:
-          cmakeVersion: "4.0.3"
+          cmakeVersion: "3.22.6"
 
       # ===================================================================
       # Download Android NDK r25c
@@ -34,33 +34,48 @@ jobs:
           echo "NDK_DIR=$(pwd)/android-ndk-r25c" >> $GITHUB_ENV
 
       # ===================================================================
-      # Clone ShadowHook source
+      # Clone ShadowHook source (v2.0.1)
       # ===================================================================
       - name: Clone ShadowHook source (v2.0.1)
         run: |
           git clone --depth 1 --branch v2.0.1 \
             https://github.com/bytedance/android-inline-hook.git shadowhook-src
+          echo "--- Top-level CMakeLists ---"
+          find shadowhook-src/shadowhook/src/main/cpp -name "CMakeLists.txt"
 
       # ===================================================================
-      # PATCH: Relax compiler warnings and switch to STATIC library
+      # PATCH: relax warnings, make MAIN lib static.
+      # NOTE: we only patch the main shadowhook CMakeLists — the
+      #       shadowhook_nothing subdirectory MUST stay SHARED because
+      #       ShadowHook dlopen()s it at runtime.
       # ===================================================================
       - name: Patch ShadowHook CMakeLists.txt
         run: |
+          set -e
           CM_FILE="shadowhook-src/shadowhook/src/main/cpp/CMakeLists.txt"
-          
-          # 1. Remove the strict -Weverything -Werror flags
-          sed -i 's/-Weverything -Werror//' "$CM_FILE"
-          
-          # 2. Change the library type from SHARED to STATIC
+          echo "=== BEFORE ==="
+          grep -n "add_library\|target_compile_options\|add_subdirectory" "$CM_FILE" || true
+
+          # Relax warnings so the build doesn't fail on newer compilers
+          sed -i 's/-Weverything -Werror//g' "$CM_FILE"
+
+          # Change the MAIN library from SHARED to STATIC.
+          # We match either spelling just in case.
           sed -i 's/add_library(${TARGET} SHARED ${SRC})/add_library(${TARGET} STATIC ${SRC})/' "$CM_FILE"
-          
-          echo "--- Patched CMakeLists.txt (relevant lines) ---"
-          grep -n "add_library\|target_compile_options" "$CM_FILE"
+          sed -i 's/add_library(${TARGET} SHARED ${SRC})/add_library(${TARGET} STATIC ${SRC})/g' "$CM_FILE"
+
+          echo "=== AFTER ==="
+          grep -n "add_library\|target_compile_options\|add_subdirectory" "$CM_FILE" || true
+
+          # Sanity: make sure the nothing subdir is added.
+          if ! grep -q "add_subdirectory" "$CM_FILE"; then
+            echo "WARNING: no add_subdirectory() found in main CMakeLists — nothing lib might not build"
+          fi
 
       # ===================================================================
-      # Build libshadowhook.a (static, arm64-v8a)
+      # Build EVERYTHING (static shadowhook + shared shadowhook_nothing)
       # ===================================================================
-      - name: Build libshadowhook.a (static, arm64-v8a)
+      - name: Build ShadowHook (static + nothing)
         run: |
           set -e
           export NDK_DIR=$(pwd)/android-ndk-r25c
@@ -73,12 +88,34 @@ jobs:
                 -DANDROID_PLATFORM=android-21 \
                 -DCMAKE_BUILD_TYPE=Release
 
-          cmake --build shadowhook-build --target shadowhook -j$(nproc)
+          # IMPORTANT: no --target flag. We want every target built,
+          # including shadowhook_nothing which lives in a subdirectory.
+          cmake --build shadowhook-build -j$(nproc)
+
+          echo "=== All built libs ==="
+          find shadowhook-build \( -name "*.so" -o -name "*.a" \) -print
 
           SHADOWHOOK_A=$(find shadowhook-build -name "libshadowhook.a" | head -n1)
-          echo "Found static library: $SHADOWHOOK_A"
+          SHADOWHOOK_NOTHING_SO=$(find shadowhook-build -name "libshadowhook_nothing.so" | head -n1)
+
+          if [ -z "$SHADOWHOOK_A" ]; then
+            echo "ERROR: libshadowhook.a not found"; exit 1
+          fi
+          if [ -z "$SHADOWHOOK_NOTHING_SO" ]; then
+            echo "ERROR: libshadowhook_nothing.so not found"
+            echo "--- Search results ---"
+            find shadowhook-build -name "*nothing*" || true
+            exit 1
+          fi
+
+          echo "Static  lib : $SHADOWHOOK_A"
+          echo "Nothing lib : $SHADOWHOOK_NOTHING_SO"
+
           mkdir -p output
-          cp "$SHADOWHOOK_A" output/libshadowhook.a
+          cp "$SHADOWHOOK_A"         output/libshadowhook.a
+          cp "$SHADOWHOOK_NOTHING_SO" output/libshadowhook_nothing.so
+
+          echo "=== output/ ==="
           ls -lh output/
 
       # ===================================================================
@@ -86,18 +123,22 @@ jobs:
       # ===================================================================
       - name: Stage headers
         run: |
+          set -e
           mkdir -p output/include
           find shadowhook-src/shadowhook/src/main/cpp/include -name "*.h" \
             -exec cp {} output/include/ \;
+          echo "=== headers ==="
           ls -lh output/include/
 
       # ===================================================================
-      # Upload artifact
+      # Upload artifacts
       # ===================================================================
-      - name: Upload libshadowhook.a
+      - name: Upload libshadowhook artifacts
         uses: actions/upload-artifact@v4
         with:
           name: libshadowhook-static-arm64
           path: |
             output/libshadowhook.a
+            output/libshadowhook_nothing.so
             output/include/*.h
+          if-no-files-found: error
